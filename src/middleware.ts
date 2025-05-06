@@ -92,8 +92,10 @@ export async function middleware(request: NextRequest) {
       .single();
 
     // Allow access to settings if profile fetch fails (likely new user needs to create profile)
-    if (profileError && !isSettingsPath) {
+    // Also bypass this initial redirect for admins, as they might not have a full profile initially
+    if (profileError && !isSettingsPath && profile?.role !== 'admin') {
         console.error("Middleware: Error fetching profile:", profileError.message);
+        // Redirect non-admins to settings if profile fetch fails
         return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
     }
 
@@ -102,9 +104,9 @@ export async function middleware(request: NextRequest) {
       const founderStatus = profile.application_status;
       const profileComplete = isProfileComplete(profile);
 
-      // 1. Profile Completion Check
-      if (!profileComplete && !isSettingsPath && !isPendingApprovalPath) {
-        console.log(`Middleware: Profile incomplete. Redirecting from ${pathname} to /settings/profile`);
+      // 1. Profile Completion Check (Bypass for Admins)
+      if (userRole !== 'admin' && !profileComplete && !isSettingsPath && !isPendingApprovalPath) {
+        console.log(`Middleware: Profile incomplete for ${userRole}. Redirecting from ${pathname} to /settings/profile`);
         return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
       }
 
@@ -115,11 +117,17 @@ export async function middleware(request: NextRequest) {
       }
 
       // 3. Founder Approval Check
-      if (profileComplete && userRole === "founder" && founderStatus !== "approved") {
+      // Ensure admins are not redirected from pending approval
+      if (userRole === "founder" && founderStatus !== "approved") {
         if (!isPendingApprovalPath && !isSettingsPath && pathname !== "/") {
             console.log(`Middleware: Founder status (${founderStatus}) not approved. Redirecting from ${pathname} to /pending-approval`);
             return NextResponse.redirect(new URL("/pending-approval", request.url));
         }
+      }
+      // Redirect approved founders away from pending page
+      if (userRole === "founder" && founderStatus === "approved" && isPendingApprovalPath) {
+        console.log(`Middleware: Approved founder on pending page. Redirecting from ${pathname} to /`);
+        return NextResponse.redirect(new URL("/", request.url));
       }
     }
   }

@@ -1,34 +1,69 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import Link from 'next/link'; // Use Link for navigation
-import { Menu, X } from 'lucide-react'; // Icons for mobile menu
+import Link from 'next/link';
+import { useRouter } from 'next/navigation'; // Import useRouter
+import { Menu, X } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client'; // Import Supabase client
 
 // Responsive Navigation Bar
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false); // Placeholder for auth status
-  const [userRole, setUserRole] = useState<'founder' | 'recruiter' | 'admin' | null>(null); // Placeholder
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [userRole, setUserRole] = useState<'founder' | 'recruiter' | 'admin' | null>(null);
+  const supabase = createClient();
+  const router = useRouter();
 
-  // TODO: Replace with actual auth check from Supabase
   useEffect(() => {
-    // Simulate fetching auth status
-    // const checkAuth = async () => {
-    //   const supabase = createClient();
-    //   const { data: { session } } = await supabase.auth.getSession();
-    //   setIsLoggedIn(!!session);
-    //   if (session) {
-    //     const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).single();
-    //     setUserRole(profile?.role || null);
-    //   }
-    // };
-    // checkAuth();
-    setIsLoggedIn(true); // Placeholder
-    setUserRole('admin'); // Placeholder
-  }, []);
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setIsLoggedIn(!!session);
+      if (session) {
+        // Fetch role only if logged in - used for conditional nav links
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', session.user.id)
+          .single();
+        setUserRole(profile?.role || null);
+      }
+    };
+    checkAuth();
+
+    // Listen for auth changes (login/logout)
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      setIsLoggedIn(!!session);
+      if (session) {
+        // Re-fetch role on auth change if needed, or rely on page reload/navigation
+        const fetchRole = async () => {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', session.user.id)
+            .single();
+          setUserRole(profile?.role || null);
+        };
+        fetchRole();
+      } else {
+        setUserRole(null);
+      }
+    });
+
+    // Cleanup listener on component unmount
+    return () => {
+      authListener?.subscription.unsubscribe();
+    };
+  }, [supabase]); // Add supabase to dependency array
 
   const toggleMobileMenu = () => {
     setIsMobileMenuOpen(!isMobileMenuOpen);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setIsMobileMenuOpen(false); // Close mobile menu on logout
+    router.push('/login'); // Redirect to login page
+    router.refresh(); // Ensure state is cleared
   };
 
   const navLinks = [
@@ -36,7 +71,7 @@ const Navbar = () => {
     { href: '/jobs', label: 'Jobs', roles: ['founder', 'recruiter', 'admin'] },
     { href: '/events', label: 'Events', roles: ['founder', 'recruiter', 'admin'] },
     // Conditional links based on role
-    ...(userRole === 'recruiter' ? [{ href: '/jobs/post', label: 'Post Job', roles: ['recruiter'] }] : []),
+    ...(userRole === 'recruiter' || userRole === 'founder' ? [{ href: '/jobs/post', label: 'Post Job', roles: ['recruiter', 'founder'] }] : []), // Allow founders to post too
     ...(userRole === 'admin' ? [{ href: '/admin/approvals', label: 'Admin', roles: ['admin'] }] : []),
   ];
 
@@ -51,16 +86,23 @@ const Navbar = () => {
 
           {/* Desktop Navigation Links */}
           <div className="hidden md:flex items-center space-x-4">
-            {navLinks.filter(link => link.roles.includes(userRole || '')).map((link) => (
+            {isLoggedIn && navLinks.filter(link => link.roles.includes(userRole || '')).map((link) => (
               <Link key={link.href} href={link.href} className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
                 {link.label}
               </Link>
             ))}
             {isLoggedIn ? (
-              <Link href="/settings/profile" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
-                Settings
-              </Link>
-              // TODO: Add Logout button
+              <>
+                <Link href="/settings/profile" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
+                  Settings
+                </Link>
+                <button
+                  onClick={handleLogout}
+                  className="px-3 py-2 rounded-md text-sm font-medium text-red-400 hover:bg-gray-700 hover:text-red-300"
+                >
+                  Logout
+                </button>
+              </>
             ) : (
               <>
                 <Link href="/login" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
@@ -75,19 +117,26 @@ const Navbar = () => {
 
           {/* Mobile Menu Button */}
           <div className="md:hidden flex items-center">
-            <button
-              onClick={toggleMobileMenu}
-              className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white"
-              aria-controls="mobile-menu"
-              aria-expanded={isMobileMenuOpen}
-            >
-              <span className="sr-only">Open main menu</span>
-              {isMobileMenuOpen ? (
-                <X className="block h-6 w-6" aria-hidden="true" />
-              ) : (
-                <Menu className="block h-6 w-6" aria-hidden="true" />
-              )}
-            </button>
+            {isLoggedIn && (
+              <button
+                onClick={toggleMobileMenu}
+                className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white"
+                aria-controls="mobile-menu"
+                aria-expanded={isMobileMenuOpen}
+              >
+                <span className="sr-only">Open main menu</span>
+                {isMobileMenuOpen ? (
+                  <X className="block h-6 w-6" aria-hidden="true" />
+                ) : (
+                  <Menu className="block h-6 w-6" aria-hidden="true" />
+                )}
+              </button>
+            )}
+            {!isLoggedIn && (
+               <Link href="/login" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
+                  Login
+                </Link>
+            )}
           </div>
         </div>
       </div>
@@ -95,27 +144,29 @@ const Navbar = () => {
       {/* Mobile Navigation Menu */}
       <div className={`${isMobileMenuOpen ? 'block' : 'hidden'} md:hidden`} id="mobile-menu">
         <div className="px-2 pt-2 pb-3 space-y-1 sm:px-3">
-          {navLinks.filter(link => link.roles.includes(userRole || '')).map((link) => (
-            <Link key={link.href} href={link.href} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
+          {isLoggedIn && navLinks.filter(link => link.roles.includes(userRole || '')).map((link) => (
+            <Link key={link.href} href={link.href} onClick={() => setIsMobileMenuOpen(false)} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
               {link.label}
             </Link>
           ))}
           {isLoggedIn ? (
             <>
-              <Link href="/settings/profile" className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
+              <Link href="/settings/profile" onClick={() => setIsMobileMenuOpen(false)} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
                 Settings
               </Link>
-              {/* TODO: Add Logout button */}
-              <button className="block w-full text-left px-3 py-2 rounded-md text-base font-medium text-red-400 hover:bg-gray-700 hover:text-red-300">
-                Logout (Placeholder)
+              <button
+                onClick={handleLogout}
+                className="block w-full text-left px-3 py-2 rounded-md text-base font-medium text-red-400 hover:bg-gray-700 hover:text-red-300"
+              >
+                Logout
               </button>
             </>
           ) : (
             <>
-              <Link href="/login" className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
+              <Link href="/login" onClick={() => setIsMobileMenuOpen(false)} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
                 Login
               </Link>
-              <Link href="/signup" className="block px-3 py-2 rounded-md text-base font-medium bg-indigo-600 hover:bg-indigo-700">
+              <Link href="/signup" onClick={() => setIsMobileMenuOpen(false)} className="block px-3 py-2 rounded-md text-base font-medium bg-indigo-600 hover:bg-indigo-700">
                 Sign Up
               </Link>
             </>
