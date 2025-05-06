@@ -11,7 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardFooter } from '@/componen
 import { createClient } from '@/lib/supabase/client'; // Import Supabase client
 import type { User } from '@supabase/supabase-js';
 
-// Define the structure for profile data from Supabase
+// Define the structure for profile data from Supabase (Corrected)
 interface ProfileData {
   id: string;
   role: 'founder' | 'recruiter' | 'admin';
@@ -22,13 +22,35 @@ interface ProfileData {
   location: string | null;
   profile_blurb: string | null;
   is_profile_complete: boolean;
-  // Founder specific
-  industry_experience: string | null;
-  funding_type: string | null;
-  expertise: string | null;
-  open_roles_description: string | null;
+  // Founder specific (Corrected)
+  company_name: string | null;
+  company_website: string | null;
+  industry: string | null; // Corrected from industry_experience
+  funding_stage: string | null; // Corrected from funding_type
+  expertise_seeking: string | null; // Corrected from expertise
   // Recruiter specific (add if needed)
 }
+
+// Helper function to check if essential profile fields are filled (matches middleware)
+const checkProfileComplete = (profile: ProfileData | null): boolean => {
+  if (!profile) return false;
+  // Check for common essential fields: first_name, last_name, linkedin_url
+  const commonEssentialFields = ["first_name", "last_name", "linkedin_url"];
+  const commonFieldsFilled = commonEssentialFields.every(field => profile[field as keyof ProfileData] && String(profile[field as keyof ProfileData]).trim() !== "");
+  
+  if (!commonFieldsFilled) return false;
+
+  // Check for founder-specific essential fields only if the role is founder
+  if (profile.role === "founder") {
+    const founderEssentialFields = ["company_name", "company_website", "industry"];
+    const founderFieldsFilled = founderEssentialFields.every(field => profile[field as keyof ProfileData] && String(profile[field as keyof ProfileData]).trim() !== "");
+    if (!founderFieldsFilled) return false;
+  }
+  
+  // Add checks for other roles if needed
+
+  return true; // All required fields for the role are filled
+};
 
 export default function ProfileSettingsPage() {
   const [user, setUser] = useState<User | null>(null);
@@ -54,11 +76,8 @@ export default function ProfileSettingsPage() {
         .single();
 
       if (profileError) {
-        // Handle case where profile might not exist yet (though trigger should create it)
         if (profileError.code === 'PGRST116') { 
           console.warn('Profile not found for user, might be new signup.');
-          // Initialize a default profile structure based on role if possible
-          // This case should ideally be handled by the signup trigger
           setError('Profile not found. Please try logging out and back in.');
         } else {
           throw profileError;
@@ -68,7 +87,6 @@ export default function ProfileSettingsPage() {
       if (data) {
         setProfile(data as ProfileData);
       } else if (!profileError) {
-         // Should not happen if profileError is handled correctly, but as a fallback
          setError('Profile not found. Please try logging out and back in.');
       }
 
@@ -112,7 +130,10 @@ export default function ProfileSettingsPage() {
     setSuccess(null);
     console.log("Saving profile settings for user:", user.id);
 
-    // Prepare data for Supabase update, ensuring required fields are present
+    // Check completeness before preparing updates
+    const isComplete = checkProfileComplete(profile);
+
+    // Prepare data for Supabase update (Corrected)
     const updates = {
       first_name: profile.first_name,
       last_name: profile.last_name,
@@ -120,15 +141,15 @@ export default function ProfileSettingsPage() {
       linkedin_url: profile.linkedin_url,
       location: profile.location,
       profile_blurb: profile.profile_blurb,
-      // Include founder fields only if the role is founder
+      // Include founder fields only if the role is founder (Corrected)
       ...(profile.role === 'founder' && {
-        industry_experience: profile.industry_experience,
-        funding_type: profile.funding_type,
-        expertise: profile.expertise,
-        open_roles_description: profile.open_roles_description,
+        company_name: profile.company_name,
+        company_website: profile.company_website,
+        industry: profile.industry, // Corrected
+        funding_stage: profile.funding_stage, // Corrected
+        expertise_seeking: profile.expertise_seeking, // Corrected
       }),
-      // Mark profile as complete if essential fields are filled (customize this logic)
-      is_profile_complete: !!(profile.first_name && profile.last_name && profile.location), 
+      is_profile_complete: isComplete, // Use consistent check
       updated_at: new Date().toISOString(), // Manually update timestamp
     };
 
@@ -141,14 +162,14 @@ export default function ProfileSettingsPage() {
       if (updateError) throw updateError;
 
       setSuccess('Profile updated successfully!');
-      // Optionally update local profile state if needed, though fetch on load handles it
-      // setProfile(prev => prev ? { ...prev, ...updates, is_profile_complete: updates.is_profile_complete } : null);
+      // Update local state to reflect completion status change immediately
+      setProfile(prev => prev ? { ...prev, is_profile_complete: isComplete } : null);
       
-      // Check if profile is now complete and redirect if coming from incomplete state?
-      // const searchParams = new URLSearchParams(window.location.search);
-      // if (updates.is_profile_complete && searchParams.get('incomplete')) {
-      //   router.push('/'); // Redirect to home after completing profile
-      // }
+      // Redirect if profile is now complete and user was forced here
+      const searchParams = new URLSearchParams(window.location.search);
+      if (isComplete && searchParams.get('incomplete')) {
+        router.push('/'); // Redirect to home after completing profile
+      }
 
     } catch (error: any) {
       console.error('Error saving profile:', error);
@@ -196,12 +217,12 @@ export default function ProfileSettingsPage() {
 
               <div className="space-y-1">
                 <Label htmlFor="linkedin_url">LinkedIn Profile URL</Label>
-                <Input id="linkedin_url" name="linkedin_url" type="url" value={profile.linkedin_url || ''} onChange={handleInputChange} placeholder="https://linkedin.com/in/..." />
+                <Input id="linkedin_url" name="linkedin_url" type="url" value={profile.linkedin_url || ''} onChange={handleInputChange} placeholder="https://linkedin.com/in/..." required/>
               </div>
 
               <div className="space-y-1">
                 <Label htmlFor="location">Location</Label>
-                <Input id="location" name="location" value={profile.location || ''} onChange={handleInputChange} placeholder="e.g., City, State, Country" required/>
+                <Input id="location" name="location" value={profile.location || ''} onChange={handleInputChange} placeholder="e.g., City, State, Country" />
               </div>
 
               <div className="space-y-1">
@@ -209,28 +230,33 @@ export default function ProfileSettingsPage() {
                 <Textarea id="profile_blurb" name="profile_blurb" value={profile.profile_blurb || ''} onChange={handleInputChange} placeholder="Tell us a bit about yourself or your company..." rows={3} />
               </div>
 
-              {/* Founder Specific Fields */}
+              {/* Founder Specific Fields (Corrected) */}
               {profile.role === 'founder' && (
                 <>
                   <hr className="my-4 md:my-6" />
                   <h2 className="text-lg md:text-xl font-semibold">Founder Details</h2>
                   <div className="space-y-4 md:space-y-6">
                     <div className="space-y-1">
-                      <Label htmlFor="industry_experience">Industry Experience</Label>
-                      <Input id="industry_experience" name="industry_experience" value={profile.industry_experience || ''} onChange={handleInputChange} placeholder="e.g., SaaS, Fintech, E-commerce" />
+                      <Label htmlFor="company_name">Company Name</Label>
+                      <Input id="company_name" name="company_name" value={profile.company_name || ''} onChange={handleInputChange} placeholder="Your company's name" required/>
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor="funding_type">Funding Type / Stage</Label>
-                      <Input id="funding_type" name="funding_type" value={profile.funding_type || ''} onChange={handleInputChange} placeholder="e.g., Bootstrapped, Pre-seed, Series A" />
+                      <Label htmlFor="company_website">Company Website</Label>
+                      <Input id="company_website" name="company_website" type="url" value={profile.company_website || ''} onChange={handleInputChange} placeholder="https://yourcompany.com" required/>
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor="expertise">Areas of Expertise</Label>
-                      <Input id="expertise" name="expertise" value={profile.expertise || ''} onChange={handleInputChange} placeholder="e.g., Product Management, Go-to-Market, Engineering" />
+                      <Label htmlFor="industry">Industry</Label> {/* Corrected */} 
+                      <Input id="industry" name="industry" value={profile.industry || ''} onChange={handleInputChange} placeholder="e.g., SaaS, Fintech, E-commerce" required/>
                     </div>
                     <div className="space-y-1">
-                      <Label htmlFor="open_roles_description">Open Roles / Hiring Needs</Label>
-                      <Textarea id="open_roles_description" name="open_roles_description" value={profile.open_roles_description || ''} onChange={handleInputChange} placeholder="Describe the key roles you are currently hiring for..." rows={3} />
+                      <Label htmlFor="funding_stage">Funding Stage</Label> {/* Corrected */} 
+                      <Input id="funding_stage" name="funding_stage" value={profile.funding_stage || ''} onChange={handleInputChange} placeholder="e.g., Bootstrapped, Pre-seed, Series A" />
                     </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="expertise_seeking">Expertise Seeking</Label> {/* Corrected */} 
+                      <Input id="expertise_seeking" name="expertise_seeking" value={profile.expertise_seeking || ''} onChange={handleInputChange} placeholder="e.g., Marketing, Sales, Engineering Leadership" />
+                    </div>
+                    {/* Removed open_roles_description as it's not in the schema */}
                   </div>
                 </>
               )}
