@@ -18,7 +18,6 @@ const createSupabaseMiddlewareClient = (request: NextRequest, response: NextResp
       },
       set(name: string, value: string, options: CookieOptions) {
         request.cookies.set({ name, value, ...options });
-        // Ensure response object is updated for cookie setting
         response = NextResponse.next({ request: { headers: request.headers } });
         response.cookies.set({ name, value, ...options });
       },
@@ -34,12 +33,22 @@ const createSupabaseMiddlewareClient = (request: NextRequest, response: NextResp
 // Helper function to check if essential profile fields are filled
 const isProfileComplete = (profile: any): boolean => {
   if (!profile) return false;
-  // Define essential fields - adjust as needed
-  const essentialFields = ["full_name", "linkedin_url"]; 
+  // Check for common essential fields: first_name, last_name, linkedin_url
+  const commonEssentialFields = ["first_name", "last_name", "linkedin_url"];
+  const commonFieldsFilled = commonEssentialFields.every(field => profile[field] && String(profile[field]).trim() !== "");
+  
+  if (!commonFieldsFilled) return false;
+
+  // Check for founder-specific essential fields only if the role is founder
   if (profile.role === "founder") {
-    essentialFields.push("company_name", "company_website", "industry"); // Add founder-specific fields
+    const founderEssentialFields = ["company_name", "company_website", "industry"];
+    const founderFieldsFilled = founderEssentialFields.every(field => profile[field] && String(profile[field]).trim() !== "");
+    if (!founderFieldsFilled) return false;
   }
-  return essentialFields.every(field => profile[field] && profile[field].trim() !== "");
+  
+  // Add checks for other roles if needed
+
+  return true; // All required fields for the role are filled
 };
 
 export async function middleware(request: NextRequest) {
@@ -75,16 +84,16 @@ export async function middleware(request: NextRequest) {
   // --- Role-Based Access Control & Profile Completion (if session exists) ---
   if (session) {
     // Fetch user profile including fields needed for completeness check
+    // Ensure first_name and last_name are fetched
     const { data: profile, error: profileError } = await supabase
       .from("profiles")
-      .select("role, application_status, full_name, linkedin_url, company_name, company_website, industry") // Add fields for completeness check
+      .select("role, application_status, first_name, last_name, linkedin_url, company_name, company_website, industry") 
       .eq("id", session.user.id)
       .single();
 
     // Allow access to settings if profile fetch fails (likely new user needs to create profile)
     if (profileError && !isSettingsPath) {
         console.error("Middleware: Error fetching profile:", profileError.message);
-        // Redirect to profile settings if profile doesn't exist yet
         return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
     }
 
@@ -93,8 +102,7 @@ export async function middleware(request: NextRequest) {
       const founderStatus = profile.application_status;
       const profileComplete = isProfileComplete(profile);
 
-      // 1. Profile Completion Check (Highest Priority after Auth)
-      // Redirect to profile settings if incomplete, unless already there or pending approval
+      // 1. Profile Completion Check
       if (!profileComplete && !isSettingsPath && !isPendingApprovalPath) {
         console.log(`Middleware: Profile incomplete. Redirecting from ${pathname} to /settings/profile`);
         return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
@@ -107,17 +115,12 @@ export async function middleware(request: NextRequest) {
       }
 
       // 3. Founder Approval Check
-      // Only check if profile is complete, otherwise they are already redirected
       if (profileComplete && userRole === "founder" && founderStatus !== "approved") {
-        // Allow access only to pending approval page and settings
-        if (!isPendingApprovalPath && !isSettingsPath && pathname !== "/") { // Allow homepage
+        if (!isPendingApprovalPath && !isSettingsPath && pathname !== "/") {
             console.log(`Middleware: Founder status (${founderStatus}) not approved. Redirecting from ${pathname} to /pending-approval`);
             return NextResponse.redirect(new URL("/pending-approval", request.url));
         }
       }
-      
-      // 4. Recruiter Access (Placeholder - Add specific checks if needed)
-      // ...
     }
   }
 
