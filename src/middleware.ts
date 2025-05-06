@@ -30,7 +30,7 @@ const createSupabaseMiddlewareClient = (request: NextRequest, response: NextResp
   });
 };
 
-// Helper function to check if essential profile fields are filled
+// Helper function to check if essential profile fields are filled (Consistent with page)
 const isProfileComplete = (profile: any): boolean => {
   if (!profile) return false;
   // Check for common essential fields: first_name, last_name, linkedin_url
@@ -41,12 +41,12 @@ const isProfileComplete = (profile: any): boolean => {
 
   // Check for founder-specific essential fields only if the role is founder
   if (profile.role === "founder") {
-    const founderEssentialFields = ["company_name", "company_website", "industry"];
+    const founderEssentialFields = ["company_name", "company_website", "industry"]; // Matches required fields in settings form
     const founderFieldsFilled = founderEssentialFields.every(field => profile[field] && String(profile[field]).trim() !== "");
     if (!founderFieldsFilled) return false;
   }
   
-  // Add checks for other roles if needed
+  // Add checks for other roles if needed (e.g., recruiter)
 
   return true; // All required fields for the role are filled
 };
@@ -71,72 +71,104 @@ export async function middleware(request: NextRequest) {
   const isPublicPath = publicPaths.some(path => pathname.startsWith(path));
   const isSettingsPath = pathname.startsWith("/settings");
   const isPendingApprovalPath = pathname.startsWith("/pending-approval");
+  const isAdminPath = pathname.startsWith("/admin");
 
   // --- Authentication Checks ---
   if (!session && !isPublicPath) {
+    console.log(`Middleware: No session, redirecting from ${pathname} to /login`);
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
   if (session && isPublicPath && pathname !== "/auth/callback") {
+    console.log(`Middleware: Session exists, redirecting from public path ${pathname} to /`);
     return NextResponse.redirect(new URL("/", request.url));
   }
 
   // --- Role-Based Access Control & Profile Completion (if session exists) ---
   if (session) {
-    // Fetch user profile including fields needed for completeness check
-    // Ensure first_name and last_name are fetched
-    const { data: profile, error: profileError } = await supabase
+    // Try fetching just the role first to handle admin bypass efficiently
+    const { data: roleData, error: roleError } = await supabase
       .from("profiles")
-      .select("role, application_status, first_name, last_name, linkedin_url, company_name, company_website, industry") 
+      .select("role")
       .eq("id", session.user.id)
       .single();
 
-    // Allow access to settings if profile fetch fails (likely new user needs to create profile)
-    // Also bypass this initial redirect for admins, as they might not have a full profile initially
-    if (profileError && !isSettingsPath && profile?.role !== 'admin') {
-        console.error("Middleware: Error fetching profile:", profileError.message);
-        // Redirect non-admins to settings if profile fetch fails
+    if (roleError && !isSettingsPath) {
+        // If role fetch fails (e.g., profile doesn't exist yet) and not already going to settings,
+        // redirect to settings. This handles new users.
+        console.error(`Middleware: Error fetching role for ${session.user.id}, redirecting to settings. Error: ${roleError.message}`);
         return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
     }
 
-    if (profile) {
-      const userRole = profile.role;
-      const founderStatus = profile.application_status;
-      const profileComplete = isProfileComplete(profile);
+    const userRole = roleData?.role;
 
-      // 1. Profile Completion Check (Bypass for Admins)
-      if (userRole !== 'admin' && !profileComplete && !isSettingsPath && !isPendingApprovalPath) {
-        console.log(`Middleware: Profile incomplete for ${userRole}. Redirecting from ${pathname} to /settings/profile`);
-        return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
+    // --- Admin Specific Logic ---
+    if (userRole === 'admin') {
+      // Admins can access anything except non-admin specific restricted paths (none currently)
+      // Ensure they are not blocked by profile completion or founder approval checks.
+      console.log(`Middleware: User is admin, allowing access to ${pathname}`);
+      // Protect admin routes (redundant check, but safe)
+      if (isAdminPath) {
+        return response; // Allow access to admin paths
       }
+      // Allow access to all other paths as well
+      return response; 
+    }
 
-      // 2. Admin Route Protection
-      if (pathname.startsWith("/admin") && userRole !== "admin") {
-        console.log(`Middleware: Non-admin (${userRole}) access attempt to ${pathname}. Redirecting to /`);
-        return NextResponse.redirect(new URL("/", request.url));
-      }
+    // --- Non-Admin Logic ---
+    if (userRole) { // Proceed only if role was successfully fetched
+        // Fetch full profile for non-admins for completion/approval checks
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("role, application_status, first_name, last_name, linkedin_url, company_name, company_website, industry") // Ensure all fields needed by isProfileComplete are here
+          .eq("id", session.user.id)
+          .single();
 
-      // 3. Founder Approval Check
-      // Ensure admins are not redirected from pending approval
-      if (userRole === "founder" && founderStatus !== "approved") {
-        if (!isPendingApprovalPath && !isSettingsPath && pathname !== "/") {
-            console.log(`Middleware: Founder status (${founderStatus}) not approved. Redirecting from ${pathname} to /pending-approval`);
-            return NextResponse.redirect(new URL("/pending-approval", request.url));
+        // Handle profile fetch error for non-admins
+        if (profileError && !isSettingsPath) {
+            console.error(`Middleware: Error fetching profile for non-admin ${session.user.id}, redirecting to settings. Error: ${profileError.message}`);
+            return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
         }
-      }
-      // Redirect approved founders away from pending page
-      if (userRole === "founder" && founderStatus === "approved" && isPendingApprovalPath) {
-        console.log(`Middleware: Approved founder on pending page. Redirecting from ${pathname} to /`);
-        return NextResponse.redirect(new URL("/", request.url));
-      }
+
+        if (profile) {
+            const profileComplete = isProfileComplete(profile);
+            const founderStatus = profile.application_status;
+
+            // 1. Profile Completion Check (for non-admins)
+            if (!profileComplete && !isSettingsPath && !isPendingApprovalPath) {
+                console.log(`Middleware: Profile incomplete for ${userRole}. Redirecting from ${pathname} to /settings/profile`);
+                return NextResponse.redirect(new URL("/settings/profile?incomplete=true", request.url));
+            }
+
+            // 2. Admin Route Protection (should not be reachable by non-admins due to this check)
+            if (isAdminPath) { // This check should ideally never be hit if role is not admin, but keep as safeguard
+                console.log(`Middleware: Non-admin (${userRole}) blocked from admin path ${pathname}. Redirecting to /`);
+                return NextResponse.redirect(new URL("/", request.url));
+            }
+
+            // 3. Founder Approval Check
+            if (userRole === "founder") {
+                if (founderStatus !== "approved" && !isPendingApprovalPath && !isSettingsPath && pathname !== "/") {
+                    console.log(`Middleware: Founder status (${founderStatus}) not approved. Redirecting from ${pathname} to /pending-approval`);
+                    return NextResponse.redirect(new URL("/pending-approval", request.url));
+                }
+                // Redirect approved founders away from pending page
+                if (founderStatus === "approved" && isPendingApprovalPath) {
+                    console.log(`Middleware: Approved founder on pending page. Redirecting from ${pathname} to /`);
+                    return NextResponse.redirect(new URL("/", request.url));
+                }
+            }
+        }
     }
   }
 
+  // Default: allow request to proceed
   return response;
 }
 
 export const config = {
   matcher: [
+    // Match all routes except specific static files and API routes
     "/((?!_next/static|_next/image|favicon.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

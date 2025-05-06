@@ -1,51 +1,83 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation'; // Import useRouter
+import { useRouter } from 'next/navigation';
 import { Menu, X } from 'lucide-react';
-import { createClient } from '@/lib/supabase/client'; // Import Supabase client
+import { createClient } from '@/lib/supabase/client';
+import type { User } from '@supabase/supabase-js';
+
+// Define the structure for profile data (role is the most critical part here)
+interface ProfileRole {
+  role: 'founder' | 'recruiter' | 'admin' | null;
+}
 
 // Responsive Navigation Bar
 const Navbar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [userRole, setUserRole] = useState<'founder' | 'recruiter' | 'admin' | null>(null);
+  const [userRole, setUserRole] = useState<ProfileRole['role']>(null);
+  const [user, setUser] = useState<User | null>(null);
   const supabase = createClient();
   const router = useRouter();
 
+  const fetchUserRole = useCallback(async (currentUser: User) => {
+    console.log('Navbar: Fetching role for user:', currentUser.id);
+    try {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', currentUser.id)
+        .single();
+
+      if (error) {
+        // Log error but don't necessarily block UI, maybe role is set but other details missing
+        console.error('Navbar: Error fetching profile role:', error.message);
+        // If profile doesn't exist (PGRST116), role is effectively null
+        if (error.code !== 'PGRST116') {
+           // Handle other potential errors
+        }
+        setUserRole(null); // Explicitly set null if fetch fails
+      } else if (profile) {
+        console.log('Navbar: Fetched role:', profile.role);
+        setUserRole(profile.role as ProfileRole['role']);
+      } else {
+        console.warn('Navbar: Profile not found for user, setting role to null.');
+        setUserRole(null); // Set null if no profile found
+      }
+    } catch (err) {
+      console.error('Navbar: Unexpected error fetching role:', err);
+      setUserRole(null);
+    }
+  }, [supabase]);
+
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+    const checkAuthAndFetchRole = async () => {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
       setIsLoggedIn(!!session);
-      if (session) {
-        // Fetch role only if logged in - used for conditional nav links
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', session.user.id)
-          .single();
-        setUserRole(profile?.role || null);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        await fetchUserRole(session.user);
+      } else {
+        setUserRole(null); // Clear role if no session
+      }
+      if (sessionError) {
+        console.error('Navbar: Error getting session:', sessionError.message);
       }
     };
-    checkAuth();
+
+    checkAuthAndFetchRole();
 
     // Listen for auth changes (login/logout)
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('Navbar: Auth state changed:', event);
       setIsLoggedIn(!!session);
-      if (session) {
-        // Re-fetch role on auth change if needed, or rely on page reload/navigation
-        const fetchRole = async () => {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('role')
-            .eq('id', session.user.id)
-            .single();
-          setUserRole(profile?.role || null);
-        };
-        fetchRole();
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        // Re-fetch role on auth change
+        await fetchUserRole(session.user);
       } else {
-        setUserRole(null);
+        setUserRole(null); // Clear role on logout
       }
     });
 
@@ -53,7 +85,7 @@ const Navbar = () => {
     return () => {
       authListener?.subscription.unsubscribe();
     };
-  }, [supabase]); // Add supabase to dependency array
+  }, [supabase, fetchUserRole]);
 
   const toggleMobileMenu = () => {
     setIsMobileMenuOpen(!isMobileMenuOpen);
@@ -62,18 +94,21 @@ const Navbar = () => {
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setIsMobileMenuOpen(false); // Close mobile menu on logout
+    setUserRole(null); // Clear role immediately on logout
     router.push('/login'); // Redirect to login page
-    router.refresh(); // Ensure state is cleared
+    // No need for router.refresh() usually, state updates should handle it
   };
 
+  // Define links - Filter based on fetched userRole
   const navLinks = [
     { href: '/directory', label: 'Directory', roles: ['founder', 'recruiter', 'admin'] },
     { href: '/jobs', label: 'Jobs', roles: ['founder', 'recruiter', 'admin'] },
     { href: '/events', label: 'Events', roles: ['founder', 'recruiter', 'admin'] },
-    // Conditional links based on role
-    ...(userRole === 'recruiter' || userRole === 'founder' ? [{ href: '/jobs/post', label: 'Post Job', roles: ['recruiter', 'founder'] }] : []), // Allow founders to post too
-    ...(userRole === 'admin' ? [{ href: '/admin/approvals', label: 'Admin', roles: ['admin'] }] : []),
+    { href: '/jobs/post', label: 'Post Job', roles: ['recruiter', 'founder'] }, // Allow founders to post too
+    { href: '/admin/approvals', label: 'Admin', roles: ['admin'] }, // Admin dashboard link
   ];
+
+  const visibleNavLinks = isLoggedIn ? navLinks.filter(link => userRole && link.roles.includes(userRole)) : [];
 
   return (
     <nav className="bg-gray-800 text-white shadow-md">
@@ -86,7 +121,7 @@ const Navbar = () => {
 
           {/* Desktop Navigation Links */}
           <div className="hidden md:flex items-center space-x-4">
-            {isLoggedIn && navLinks.filter(link => link.roles.includes(userRole || '')).map((link) => (
+            {visibleNavLinks.map((link) => (
               <Link key={link.href} href={link.href} className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
                 {link.label}
               </Link>
@@ -117,7 +152,7 @@ const Navbar = () => {
 
           {/* Mobile Menu Button */}
           <div className="md:hidden flex items-center">
-            {isLoggedIn && (
+            {isLoggedIn ? (
               <button
                 onClick={toggleMobileMenu}
                 className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-white hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white"
@@ -131,8 +166,7 @@ const Navbar = () => {
                   <Menu className="block h-6 w-6" aria-hidden="true" />
                 )}
               </button>
-            )}
-            {!isLoggedIn && (
+            ) : (
                <Link href="/login" className="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700">
                   Login
                 </Link>
@@ -144,7 +178,7 @@ const Navbar = () => {
       {/* Mobile Navigation Menu */}
       <div className={`${isMobileMenuOpen ? 'block' : 'hidden'} md:hidden`} id="mobile-menu">
         <div className="px-2 pt-2 pb-3 space-y-1 sm:px-3">
-          {isLoggedIn && navLinks.filter(link => link.roles.includes(userRole || '')).map((link) => (
+          {visibleNavLinks.map((link) => (
             <Link key={link.href} href={link.href} onClick={() => setIsMobileMenuOpen(false)} className="block px-3 py-2 rounded-md text-base font-medium hover:bg-gray-700">
               {link.label}
             </Link>
@@ -177,7 +211,7 @@ const Navbar = () => {
   );
 };
 
-// Basic Footer (already reasonably responsive)
+// Basic Footer
 const Footer = () => {
   return (
     <footer className="bg-gray-200 text-center p-4 mt-8">
@@ -201,7 +235,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
       <Navbar />
-      {/* Adjusted padding for different screen sizes */}
       <main className="flex-grow container mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
         {children}
       </main>
